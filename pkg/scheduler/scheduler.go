@@ -52,6 +52,7 @@ import (
 	"k8s.io/kubernetes/pkg/scheduler/util/assumecache"
 )
 
+// 调度器源码阅读https://zhuanlan.zhihu.com/p/557136318
 const (
 	//调度器在使假定的pod到期之前等待的时间。
 	//有关此参数及其值的更多详细信息，请参阅问题#106361。
