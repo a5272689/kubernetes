@@ -73,9 +73,11 @@ func init() {
 	utilruntime.Must(features.AddFeatureGates(utilfeature.DefaultMutableFeatureGate))
 }
 
+// 选项配置框架。注册表。
 // Option configures a framework.Registry.
 type Option func(runtime.Registry) error
 
+// NewSchedulerCommand创建了一个*眼镜蛇。具有默认参数和注册表选项的命令对象
 // NewSchedulerCommand creates a *cobra.Command object with default parameters and registryOptions
 func NewSchedulerCommand(registryOptions ...Option) *cobra.Command {
 	// explicitly register (if not already registered) the kube effective version and feature gate in DefaultComponentGlobalsRegistry,
@@ -129,10 +131,13 @@ for more information about scheduling and the kube-scheduler component.`,
 	return cmd
 }
 
+// runCommand运行调度程序。
 // runCommand runs the scheduler.
 func runCommand(cmd *cobra.Command, opts *options.Options, registryOptions ...Option) error {
 	verflag.PrintAndExitIfRequested()
 	fg := opts.ComponentGlobalsRegistry.FeatureGateFor(featuregate.DefaultKubeComponent)
+	//之后尽快激活日志记录
+	//显示带有最终日志配置的标志。
 	// Activate logging as soon as possible, after that
 	// show flags with the final logging configuration.
 	if err := logsapi.ValidateAndApply(opts.Logs, fg); err != nil {
@@ -153,20 +158,23 @@ func runCommand(cmd *cobra.Command, opts *options.Options, registryOptions ...Op
 	if err != nil {
 		return err
 	}
+	//添加功能启用指标
 	// add feature enablement metrics
 	fg.(featuregate.MutableFeatureGate).AddMetrics()
 	return Run(ctx, cc, sched)
 }
 
+// Run根据给定的配置执行调度程序。它只在出错或上下文完成时返回。
 // Run executes the scheduler based on the given configuration. It only returns on error or when context is done.
 func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *scheduler.Scheduler) error {
 	logger := klog.FromContext(ctx)
-
+	//为了帮助调试，立即记录版本
 	// To help debugging, immediately log version
 	logger.Info("Starting Kubernetes Scheduler", "version", utilversion.Get())
 
 	logger.Info("Golang settings", "GOGC", os.Getenv("GOGC"), "GOMAXPROCS", os.Getenv("GOMAXPROCS"), "GOTRACEBACK", os.Getenv("GOTRACEBACK"))
 
+	//配置注册。
 	// Configz registration.
 	if cz, err := configz.New("componentconfig"); err != nil {
 		return fmt.Errorf("unable to register configz: %s", err)
@@ -174,10 +182,12 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 		cz.Set(cc.ComponentConfig)
 	}
 
+	//启动事件处理管道。
 	// Start events processing pipeline.
 	cc.EventBroadcaster.StartRecordingToSink(ctx.Done())
 	defer cc.EventBroadcaster.Shutdown()
 
+	//设置健康检查。
 	// Setup healthz checks.
 	var checks, readyzChecks []healthz.HealthChecker
 	if cc.ComponentConfig.LeaderElection.LeaderElect {
@@ -185,7 +195,7 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 		readyzChecks = append(readyzChecks, cc.LeaderElection.WatchDog)
 	}
 	readyzChecks = append(readyzChecks, healthz.NewShutdownHealthz(ctx.Done()))
-
+	// 竞选leader 配置
 	waitingForLeader := make(chan struct{})
 	isLeader := func() bool {
 		select {
@@ -219,6 +229,7 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 			return err
 		}
 
+		//启动租赁候选控制人协调领导选举
 		// Start lease candidate controller for coordinated leader election
 		leaseCandidate, waitForSync, err := leaderelection.NewCandidate(
 			cc.Client,
@@ -236,11 +247,14 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 		go leaseCandidate.Run(ctx)
 	}
 
+	//启动healthz服务器。
 	// Start up the healthz server.
 	if cc.SecureServing != nil {
 		handler := buildHandlerChain(newHealthEndpointsAndMetricsHandler(&cc.ComponentConfig, cc.InformerFactory, isLeader, checks, readyzChecks), cc.Authentication.Authenticator, cc.Authorization.Authorizer)
 		// TODO: handle stoppedCh and listenerStoppedCh returned by c.SecureServing.Serve
+		// TODO: handle stoppedCh and listenerStoppedCh returned by c.SecureServing.Serve
 		if _, _, err := cc.SecureServing.Serve(handler, 0, ctx.Done()); err != nil {
+			//安全处理程序提前失败，从上面删除旧的错误循环
 			// fail early for secure handlers, removing the old error loop from above
 			return fmt.Errorf("failed to start secure server: %v", err)
 		}
@@ -248,19 +262,24 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 
 	startInformersAndWaitForSync := func(ctx context.Context) {
 		// Start all informers.
+		// Start all informers.
 		cc.InformerFactory.Start(ctx.Done())
+		//DynInformerFactory在测试中可以为零。
 		// DynInformerFactory can be nil in tests.
 		if cc.DynInformerFactory != nil {
 			cc.DynInformerFactory.Start(ctx.Done())
 		}
 
+		// 等待所有缓存同步后再进行调度。
 		// Wait for all caches to sync before scheduling.
 		cc.InformerFactory.WaitForCacheSync(ctx.Done())
+		//DynInformerFactory在测试中可以为零。
 		// DynInformerFactory can be nil in tests.
 		if cc.DynInformerFactory != nil {
 			cc.DynInformerFactory.WaitForCacheSync(ctx.Done())
 		}
 
+		//在调度之前，等待所有处理程序同步（初始列表中的所有项目都已交付）。
 		// Wait for all handlers to sync (all items in the initial list delivered) before scheduling.
 		if err := sched.WaitForHandlersSync(ctx); err != nil {
 			logger.Error(err, "waiting for handlers to sync")
@@ -272,12 +291,14 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 	if !cc.ComponentConfig.DelayCacheUntilActive || cc.LeaderElection == nil {
 		startInformersAndWaitForSync(ctx)
 	}
+	//如果启用了领导者选举，请通过LeaderElector运行Command，直到完成并退出。 CoordinatedLeaderElection 启用协调领导者选举
 	// If leader election is enabled, runCommand via LeaderElector until done and exit.
 	if cc.LeaderElection != nil {
 		if utilfeature.DefaultFeatureGate.Enabled(kubefeatures.CoordinatedLeaderElection) {
 			cc.LeaderElection.Coordinated = true
 		}
 		cc.LeaderElection.Callbacks = leaderelection.LeaderCallbacks{
+			// 如果竞选成功开始运行
 			OnStartedLeading: func(ctx context.Context) {
 				close(waitingForLeader)
 				if cc.ComponentConfig.DelayCacheUntilActive {
@@ -290,10 +311,12 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 			OnStoppedLeading: func() {
 				select {
 				case <-ctx.Done():
+					//我们被要求终止。退出0。
 					// We were asked to terminate. Exit 0.
 					logger.Info("Requested to terminate, exiting")
 					os.Exit(0)
 				default:
+					//我们把锁弄丢了。
 					// We lost the lock.
 					logger.Error(nil, "Leaderelection lost")
 					klog.FlushAndExit(klog.ExitFlushTimeout, 1)
@@ -310,12 +333,14 @@ func Run(ctx context.Context, cc *schedulerserverconfig.CompletedConfig, sched *
 		return fmt.Errorf("lost lease")
 	}
 
+	//领导人选举已禁用，因此请内联运行Command直到完成。
 	// Leader election is disabled, so runCommand inline until done.
 	close(waitingForLeader)
 	sched.Run(ctx)
 	return fmt.Errorf("finished without leader elect")
 }
 
+// buildHandlerChain用标准过滤器包装给定的处理程序。
 // buildHandlerChain wraps the given handler with the standard filters.
 func buildHandlerChain(handler http.Handler, authn authenticator.Request, authz authorizer.Authorizer) http.Handler {
 	requestInfoResolver := &apirequest.RequestInfoFactory{}
@@ -344,6 +369,9 @@ func installMetricHandler(pathRecorderMux *mux.PathRecorderMux, informers inform
 	})
 }
 
+// newHealthEndpointsAndMetricsHandler从配置中创建一个API健康服务器，并且还将
+// 嵌入度量处理程序。
+// TODO:healthz检查已弃用，请改用livez和readyz。将来会被删除。
 // newHealthEndpointsAndMetricsHandler creates an API health server from the config, and will also
 // embed the metrics handler.
 // TODO: healthz check is deprecated, please use livez and readyz instead. Will be removed in the future.
@@ -371,6 +399,8 @@ func getRecorderFactory(cc *schedulerserverconfig.CompletedConfig) profile.Recor
 	}
 }
 
+// WithPlugin根据插件名称和工厂创建一个选项。请不要删除此功能：它用于注册树外插件，
+// 因此，kubernetes调度程序代码库中没有引用它。
 // WithPlugin creates an Option based on plugin name and factory. Please don't remove this function: it is used to register out-of-tree plugins,
 // hence there are no references to it from the kubernetes scheduler code base.
 func WithPlugin(name string, factory runtime.PluginFactory) Option {
@@ -379,6 +409,7 @@ func WithPlugin(name string, factory runtime.PluginFactory) Option {
 	}
 }
 
+// 安装程序根据命令参数和选项创建完整的配置和调度程序
 // Setup creates a completed config and a scheduler based on the command args and options
 func Setup(ctx context.Context, opts *options.Options, outOfTreeRegistryOptions ...Option) (*schedulerserverconfig.CompletedConfig, *scheduler.Scheduler, error) {
 	if cfg, err := latest.Default(); err != nil {

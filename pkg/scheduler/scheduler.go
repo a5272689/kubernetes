@@ -315,12 +315,12 @@ func New(ctx context.Context,
 
 	logger := klog.FromContext(ctx)
 	stopEverything := ctx.Done()
-
+	// 参数配置
 	options := defaultSchedulerOptions
 	for _, opt := range opts {
 		opt(&options)
 	}
-
+	// 应用默认参数
 	if options.applyDefaultProfile {
 		var versionedCfg configv1.KubeSchedulerConfiguration
 		scheme.Scheme.Default(&versionedCfg)
@@ -330,14 +330,14 @@ func New(ctx context.Context,
 		}
 		options.profiles = cfg.Profiles
 	}
-
+	// 调度策略
 	registry := frameworkplugins.NewInTreeRegistry()
 	if err := registry.Merge(options.frameworkOutOfTreeRegistry); err != nil {
 		return nil, err
 	}
 
 	metrics.Register()
-
+	// 扩展插件
 	extenders, err := buildExtenders(logger, options.extenders, options.profiles)
 	if err != nil {
 		return nil, fmt.Errorf("couldn't build extenders: %w", err)
@@ -354,12 +354,13 @@ func New(ctx context.Context,
 
 	var resourceClaimCache *assumecache.AssumeCache
 	var draManager framework.SharedDRAManager
+	// 门控特性
 	if utilfeature.DefaultFeatureGate.Enabled(features.DynamicResourceAllocation) {
 		resourceClaimInformer := informerFactory.Resource().V1beta1().ResourceClaims().Informer()
 		resourceClaimCache = assumecache.NewAssumeCache(logger, resourceClaimInformer, "ResourceClaim", "", nil)
 		draManager = dynamicresources.NewDRAManager(ctx, resourceClaimCache, informerFactory)
 	}
-
+	// 调度插件
 	profiles, err := profile.NewMap(ctx, options.profiles, registry, recorderFactory,
 		frameworkruntime.WithComponentConfigVersion(options.componentConfigVersion),
 		frameworkruntime.WithClientSet(client),
@@ -380,7 +381,7 @@ func New(ctx context.Context,
 	if len(profiles) == 0 {
 		return nil, errors.New("at least one profile is required")
 	}
-
+	// 插件分类
 	preEnqueuePluginMap := make(map[string][]framework.PreEnqueuePlugin)
 	queueingHintsPerProfile := make(internalqueue.QueueingHintMapPerProfile)
 	var returnErr error
@@ -395,7 +396,7 @@ func New(ctx context.Context,
 	if returnErr != nil {
 		return nil, returnErr
 	}
-
+	// 正在准备被调度的pod列表，使用informerFactory实现（watch）
 	podQueue := internalqueue.NewSchedulingQueue(
 		profiles[options.profiles[0].SchedulerName].QueueSortFunc(),
 		informerFactory,
@@ -413,7 +414,7 @@ func New(ctx context.Context,
 		fwk.SetPodNominator(podQueue)
 		fwk.SetPodActivator(podQueue)
 	}
-
+	//通过SchedulerCache做出的改变将被NodeLister和Algorithm观察到。
 	schedulerCache := internalcache.New(ctx, durationToExpireAssumedPod)
 
 	//安装缓存调试器。
@@ -559,6 +560,7 @@ func (sched *Scheduler) Run(ctx context.Context) {
 	<-ctx.Done()
 	sched.SchedulingQueue.Close()
 
+	// 如果插件满足io.Closer接口，则将其关闭。
 	// If the plugins satisfy the io.Closer interface, they are closed.
 	err := sched.Profiles.Close()
 	if err != nil {

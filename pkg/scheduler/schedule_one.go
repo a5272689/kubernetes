@@ -61,6 +61,7 @@ const (
 	numberOfHighestScoredNodesToReport = 3
 )
 
+// ScheduleOne为单个pod完成整个调度工作流程。它在调度算法的主机适配上被序列化。
 // ScheduleOne does the entire scheduling workflow for a single pod. It is serialized on the scheduling algorithm's host fitting.
 func (sched *Scheduler) ScheduleOne(ctx context.Context) {
 	logger := klog.FromContext(ctx)
